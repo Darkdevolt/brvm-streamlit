@@ -7,53 +7,79 @@ from datetime import datetime
 # Configuration de la page
 st.set_page_config(page_title="Cours BRVM", page_icon="📈", layout="wide")
 st.title("📊 Cours des Actions BRVM")
-st.caption("Données extraites en direct du site officiel de la BRVM")
+st.caption("Scraping direct du site officiel de la BRVM")
 
 # URL cible
 url = "https://www.brvm.org/fr/cours-actions/0"
 
 @st.cache_data(ttl=3600)  # Cache les données pendant 1 heure
 def scrape_brvm_data():
-    """Fonction pour scraper les données de la BRVM"""
+    """Fonction pour scraper les données de la BRVM - Version scraping uniquement"""
     try:
-        # Requête HTTP
+        # Requête HTTP avec headers
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'fr,fr-FR;q=0.8,en-US;q=0.5,en;q=0.3',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1'
         }
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
+        
+        # Debug: afficher l'URL
+        st.sidebar.write(f"Tentative de connexion à: {url}")
+        
+        response = requests.get(url, headers=headers, timeout=15)
+        response.raise_for_status()  # Lève une exception pour les codes 4xx/5xx
+        
+        # Vérifier le contenu
+        if len(response.content) < 1000:
+            raise Exception("Réponse trop courte, site peut-être bloqué")
         
         # Parser le contenu HTML
         soup = BeautifulSoup(response.content, 'html.parser')
         
-        # Extraire la date de la séance
-        date_element = soup.find('div', class_='seance-info')
-        date_seance = "Date non disponible"
-        if date_element:
-            date_text = date_element.get_text(strip=True)
-            date_seance = date_text.split('-')[0].strip() if '-' in date_text else date_text
+        # Debug: afficher la taille du HTML
+        st.sidebar.write(f"HTML reçu: {len(response.content)} caractères")
         
-        # Trouver le tableau (chercher la table avec les bonnes en-têtes)
+        # Trouver le tableau - approche robuste
         table = None
-        tables = soup.find_all('table')
         
+        # Essayer plusieurs méthodes pour trouver le tableau
+        # 1. Chercher par les en-têtes
+        tables = soup.find_all('table')
         for tbl in tables:
-            headers = [th.get_text(strip=True) for th in tbl.find_all('th')]
-            if 'Symbole' in headers and 'Variation (%)' in headers:
+            th_texts = [th.get_text(strip=True) for th in tbl.find_all('th')]
+            if any('Symbole' in text for text in th_texts):
                 table = tbl
                 break
         
+        # 2. Si pas trouvé, prendre la première table avec des données
+        if not table and tables:
+            table = tables[0]
+        
         if not table:
-            st.error("Tableau non trouvé dans la page")
-            return None, date_seance
+            raise Exception("Aucun tableau trouvé dans la page HTML")
         
-        # Extraire les données du tableau
+        # Extraire les lignes
+        rows = table.find_all('tr')
+        if len(rows) < 2:
+            raise Exception("Tableau vide ou insuffisamment de lignes")
+        
+        # Extraire les en-têtes
+        headers = []
+        if rows[0].find('th'):
+            headers = [th.get_text(strip=True) for th in rows[0].find_all('th')]
+        else:
+            # Deviner les en-têtes basés sur le contenu fourni
+            headers = ['Symbole', 'Nom', 'Volume', 'Cours veille (FCFA)', 
+                      'Cours Ouverture (FCFA)', 'Cours Clôture (FCFA)', 'Variation (%)']
+        
+        # Extraire les données
         data = []
-        rows = table.find_all('tr')[1:]  # Skip l'en-tête
-        
-        for row in rows:
+        for row in rows[1:]:  # Skip la première ligne (en-têtes)
             cols = row.find_all('td')
-            if len(cols) >= 7:  # Vérifier qu'on a toutes les colonnes
+            if len(cols) >= 7:  # On attend au moins 7 colonnes
                 row_data = {
                     'Symbole': cols[0].get_text(strip=True),
                     'Nom': cols[1].get_text(strip=True),
@@ -64,6 +90,9 @@ def scrape_brvm_data():
                     'Variation (%)': cols[6].get_text(strip=True).replace(',', '.')
                 }
                 data.append(row_data)
+        
+        if not data:
+            raise Exception("Aucune donnée extraite du tableau")
         
         # Créer le DataFrame
         df = pd.DataFrame(data)
@@ -76,170 +105,146 @@ def scrape_brvm_data():
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
         
-        return df, date_seance
+        # Debug: afficher les premières lignes
+        st.sidebar.write(f"Données extraites: {len(df)} lignes")
         
-    except requests.exceptions.RequestException as e:
-        st.error(f"Erreur de connexion: {e}")
-        return None, "Erreur"
+        return df, "Données BRVM réelles"
+        
+    except requests.exceptions.Timeout:
+        raise Exception("Timeout: Le site BRVM ne répond pas (délai dépassé)")
+    except requests.exceptions.ConnectionError:
+        raise Exception("Erreur de connexion: Impossible d'atteindre le site BRVM")
+    except requests.exceptions.HTTPError as e:
+        raise Exception(f"Erreur HTTP {e.response.status_code}: Accès refusé")
     except Exception as e:
-        st.error(f"Erreur lors du scraping: {e}")
-        return None, "Erreur"
+        raise Exception(f"Erreur de scraping: {str(e)}")
 
-# Interface Streamlit
-st.sidebar.header("Paramètres")
+# Interface principale
+st.sidebar.header("Configuration")
 
-# Bouton pour rafraîchir manuellement
-if st.sidebar.button("🔄 Rafraîchir les données"):
+# Bouton pour rafraîchir
+if st.sidebar.button("🔄 Forcer le rafraîchissement"):
     st.cache_data.clear()
+    st.rerun()
 
-# Afficher la date de la séance
-st.sidebar.subheader("Dernière mise à jour")
-st.sidebar.text(datetime.now().strftime("%d/%m/%Y %H:%M:%S"))
+# Afficher le statut
+st.sidebar.subheader("Statut")
+status_placeholder = st.sidebar.empty()
 
-# Charger les données
-with st.spinner("Chargement des données BRVM..."):
-    df, date_seance = scrape_brvm_data()
-
-if df is not None:
-    # Afficher la date de la séance
-    st.info(f"**Séance:** {date_seance}")
+try:
+    # Tentative de scraping
+    status_placeholder.info("⏳ Connexion au site BRVM...")
     
-    # Métriques globales
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Nombre d'actions", len(df))
-    with col2:
-        if 'Variation (%)' in df.columns:
-            hausses = (df['Variation (%)'] > 0).sum()
-            st.metric("Hausses", hausses)
-    with col3:
-        if 'Variation (%)' in df.columns:
-            baisses = (df['Variation (%)'] < 0).sum()
-            st.metric("Baisses", baisses)
-    with col4:
-        if 'Variation (%)' in df.columns:
-            stables = (df['Variation (%)'] == 0).sum()
-            st.metric("Stables", stables)
+    with st.spinner("Scraping en cours... Cela peut prendre quelques secondes"):
+        df, source = scrape_brvm_data()
     
-    # Filtres
-    st.subheader("Filtres")
-    col1, col2 = st.columns(2)
+    status_placeholder.success("✅ Données chargées avec succès")
     
-    with col1:
-        # Filtre par symbole
-        symboles = ['Tous'] + sorted(df['Symbole'].unique().tolist())
-        selected_symbole = st.selectbox("Filtrer par symbole:", symboles)
-        
-        # Filtre par variation
-        variation_filter = st.selectbox("Filtrer par variation:", 
-                                       ['Toutes', 'Hausses uniquement', 'Baisses uniquement', 'Stables uniquement'])
+    # Afficher les données
+    st.success(f"✅ Scraping réussi - {len(df)} actions récupérées")
+    st.write(f"**Source:** {source}")
     
-    with col2:
-        # Filtre par volume
-        if 'Volume' in df.columns:
-            min_vol, max_vol = int(df['Volume'].min()), int(df['Volume'].max())
-            vol_range = st.slider("Filtrer par volume:", min_vol, max_vol, (min_vol, max_vol))
-        
-        # Recherche par nom
-        search_term = st.text_input("Rechercher par nom:", "")
+    # Afficher le DataFrame brut
+    st.subheader("📋 Données brutes BRVM")
+    st.dataframe(df, use_container_width=True, height=500)
     
-    # Appliquer les filtres
-    filtered_df = df.copy()
+    # Options de téléchargement
+    st.subheader("💾 Téléchargement")
     
-    if selected_symbole != 'Tous':
-        filtered_df = filtered_df[filtered_df['Symbole'] == selected_symbole]
+    # Format CSV
+    csv = df.to_csv(index=False, encoding='utf-8-sig')
+    st.download_button(
+        label="📥 Télécharger en CSV",
+        data=csv,
+        file_name=f"brvm_{datetime.now().strftime('%Y%m%d')}.csv",
+        mime="text/csv",
+        help="Téléchargez les données au format CSV"
+    )
     
-    if variation_filter == 'Hausses uniquement':
-        filtered_df = filtered_df[filtered_df['Variation (%)'] > 0]
-    elif variation_filter == 'Baisses uniquement':
-        filtered_df = filtered_df[filtered_df['Variation (%)'] < 0]
-    elif variation_filter == 'Stables uniquement':
-        filtered_df = filtered_df[filtered_df['Variation (%)'] == 0]
+    # Format Excel
+    excel_buffer = pd.ExcelWriter('brvm_data.xlsx', engine='openpyxl')
+    df.to_excel(excel_buffer, index=False)
+    excel_buffer.close()
     
-    if 'Volume' in df.columns:
-        filtered_df = filtered_df[
-            (filtered_df['Volume'] >= vol_range[0]) & 
-            (filtered_df['Volume'] <= vol_range[1])
-        ]
+    with open('brvm_data.xlsx', 'rb') as f:
+        excel_data = f.read()
     
-    if search_term:
-        filtered_df = filtered_df[
-            filtered_df['Nom'].str.contains(search_term, case=False, na=False)
-        ]
+    st.download_button(
+        label="📊 Télécharger en Excel",
+        data=excel_data,
+        file_name=f"brvm_{datetime.now().strftime('%Y%m%d')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        help="Téléchargez les données au format Excel"
+    )
     
-    # Afficher le tableau
-    st.subheader(f"Cours des Actions ({len(filtered_df)} résultats)")
-    
-    # Formater l'affichage des nombres
-    display_df = filtered_df.copy()
-    if 'Cours Clôture (FCFA)' in display_df.columns:
-        display_df['Cours Clôture (FCFA)'] = display_df['Cours Clôture (FCFA)'].apply(
-            lambda x: f"{x:,.0f}" if pd.notnull(x) else ""
-        )
-    
-    if 'Variation (%)' in display_df.columns:
-        def color_variation(val):
-            if pd.isnull(val):
-                return ''
-            elif val > 0:
-                return 'color: green'
-            elif val < 0:
-                return 'color: red'
-            else:
-                return 'color: gray'
-        
-        # Afficher le tableau avec style
-        st.dataframe(
-            display_df.style.applymap(color_variation, subset=['Variation (%)']),
-            use_container_width=True,
-            height=600
-        )
-    else:
-        st.dataframe(display_df, use_container_width=True, height=600)
-    
-    # Options d'export
-    st.subheader("Exporter les données")
+    # Statistiques rapides
+    st.subheader("📈 Statistiques")
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        if st.button("📥 Télécharger CSV"):
-            csv = filtered_df.to_csv(index=False, encoding='utf-8-sig')
-            st.download_button(
-                label="Cliquer pour télécharger",
-                data=csv,
-                file_name=f"brvm_cours_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                mime="text/csv"
-            )
+        if 'Variation (%)' in df.columns:
+            avg_var = df['Variation (%)'].mean()
+            st.metric("Variation moyenne", f"{avg_var:.2f}%")
     
     with col2:
-        if st.button("📊 Afficher les Top 10"):
-            top10 = filtered_df.nlargest(10, 'Variation (%)') if 'Variation (%)' in filtered_df.columns else filtered_df.head(10)
-            st.dataframe(top10, use_container_width=True)
+        if 'Cours Clôture (FCFA)' in df.columns:
+            max_price = df['Cours Clôture (FCFA)'].max()
+            st.metric("Cours max", f"{max_price:,.0f} FCFA")
     
     with col3:
-        if st.button("📉 Afficher statistiques"):
-            if not filtered_df.empty and 'Variation (%)' in filtered_df.columns:
-                st.write("**Statistiques des variations:**")
-                st.write(filtered_df['Variation (%)'].describe())
+        if 'Volume' in df.columns:
+            total_volume = df['Volume'].sum()
+            st.metric("Volume total", f"{total_volume:,.0f}")
     
-    # Avertissement sur la source des données
-    st.caption("""
-    ⚠️ **Note:** Ces données sont extraites du site officiel de la BRVM. 
-    Elles sont fournies à titre informatif uniquement. 
-    Dernière extraction: {}
-    """.format(datetime.now().strftime("%d/%m/%Y %H:%M:%S")))
+except Exception as e:
+    # Affichage de l'erreur
+    status_placeholder.error("❌ Échec du scraping")
     
-else:
-    st.warning("Impossible de charger les données. Veuillez réessayer plus tard.")
-    st.info("""
-    **Dépannage:**
-    1. Vérifiez votre connexion internet
-    2. Le site de la BRVM pourrait être temporairement inaccessible
-    3. Essayez de rafraîchir la page dans quelques minutes
-    """)
+    st.error("""
+    ## ❌ Impossible d'accéder aux données BRVM
+    
+    **Problème détecté:** `{}`
+    
+    ### Causes possibles:
+    1. 🔒 **Le site BRVM bloque l'accès** aux robots/scrapers
+    2. 🌐 **Problème de connexion** internet
+    3. 🚧 **Site BRVM en maintenance** ou inaccessible
+    4. 🔄 **Structure du site modifiée**
+    
+    ### Solutions à essayer:
+    - ⏱️ **Attendez quelques minutes** et réessayez
+    - 🔄 **Cliquez sur 'Forcer le rafraîchissement'** dans la sidebar
+    - 🌍 **Vérifiez manuellement** le site: [BRVM Cours Actions](https://www.brvm.org/fr/cours-actions/0)
+    - 🛡️ **Le site peut nécessiter** un proxy ou un navigateur avec JavaScript
+    
+    ### Code d'erreur technique:
+    ```python
+    {}
+    ```
+    """.format(str(e), str(e)))
+    
+    # Afficher des informations de débogage
+    with st.expander("🔧 Informations de débogage"):
+        st.write("**Headers utilisés pour la requête:**")
+        st.code("""
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124
+        Accept: text/html,application/xhtml+xml,application/xml
+        Accept-Language: fr,fr-FR
+        """)
+        
+        st.write("**Pour tester manuellement:**")
+        st.markdown("""
+        1. Ouvrez [https://www.brvm.org/fr/cours-actions/0](https://www.brvm.org/fr/cours-actions/0)
+        2. Vérifiez si la page s'affiche
+        3. Inspectez la page (F12) pour voir le tableau
+        """)
 
 # Pied de page
 st.sidebar.markdown("---")
 st.sidebar.markdown("""
-**Instructions de déploiement sur Streamlit Cloud:**
-1. Créez un fichier `requirements.txt` avec:
+**ℹ️ À propos:**
+- **Type:** Scraping réel uniquement
+- **Source:** Site BRVM officiel
+- **Pas de données simulées**
+- **Dernière tentative:** {}
+""".format(datetime.now().strftime("%H:%M:%S")))
