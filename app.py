@@ -4,7 +4,6 @@ from bs4 import BeautifulSoup
 import pandas as pd
 from datetime import datetime
 import urllib3
-import time
 
 # Désactiver les warnings SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -14,21 +13,75 @@ st.set_page_config(page_title="BRVM Secteurs", page_icon="🏢", layout="wide")
 st.title("🏢 Secteurs d'Activité BRVM")
 st.markdown("*Classification des entreprises par secteur d'activité*")
 
-# Liste des secteurs disponibles sur BRVM
-SECTEURS = {
-    "AGRICULTURE": "BRVM - AGRICULTURE",
-    "AUTRES SECTEURS": "BRVM - AUTRES SECTEURS",
-    "DISTRIBUTION": "BRVM - DISTRIBUTION",
-    "FINANCE": "BRVM - FINANCE",
-    "INDUSTRIE": "BRVM - INDUSTRIE",
-    "SERVICES PUBLICS": "BRVM - SERVICES PUBLICS",
-    "TRANSPORT": "BRVM - TRANSPORT"
+# Classification manuelle des entreprises par secteur (basée sur BRVM)
+SECTEURS_MAPPING = {
+    # AGRICULTURE
+    "PALMCI": "Agriculture",
+    "SAPH CI": "Agriculture",
+    "SICOR": "Agriculture",
+    "SOGB": "Agriculture",
+    "SUCRIVOIRE": "Agriculture",
+    
+    # FINANCE
+    "BANK OF AFRICA BENIN": "Finance",
+    "BANK OF AFRICA BURKINA FASO": "Finance",
+    "BANK OF AFRICA CI": "Finance",
+    "BANK OF AFRICA MALI": "Finance",
+    "BANK OF AFRICA NIGER": "Finance",
+    "BANK OF AFRICA SENEGAL": "Finance",
+    "BANQUE INTERNATIONALE POUR LE COMMERCE DU BENIN": "Finance",
+    "BICICI": "Finance",
+    "CORIS BANK INTERNATIONAL BF": "Finance",
+    "ECOBANK CI": "Finance",
+    "NSIA BANQUE": "Finance",
+    "ORAGROUP TOGO": "Finance",
+    "SGBCI": "Finance",
+    "SOCIETE IVOIRIENNE DE BANQUE CI": "Finance",
+    "SMB CI": "Finance",
+    
+    # DISTRIBUTION
+    "BERNABE": "Distribution",
+    "CFAO CI": "Distribution",
+    "TRACTAFRIC MOTORS CI": "Distribution",
+    "VIVO ENERGY CI": "Distribution",
+    
+    # INDUSTRIE
+    "FILTISAC CI": "Industrie",
+    "NEI CEDA CI": "Industrie",
+    "NESTLE CI": "Industrie",
+    "SAFCA CI": "Industrie",
+    "SERVAIR ABIDJAN CI": "Industrie",
+    "SETAO CI": "Industrie",
+    "SICABLE CI": "Industrie",
+    "SITAB": "Industrie",
+    "SOLIBRA CI": "Industrie",
+    "TOTAL CI": "Industrie",
+    "TOTAL SENEGAL": "Industrie",
+    "UNILEVER CI": "Industrie",
+    "UNIWAX CI": "Industrie",
+    
+    # SERVICES PUBLICS
+    "CIE CI": "Services Publics",
+    "ONATEL BF": "Services Publics",
+    "ORANGE CI": "Services Publics",
+    "SODECI": "Services Publics",
+    "SONATEL": "Services Publics",
+    
+    # TRANSPORT
+    "AFRICA GLOBAL LOGISTICS": "Transport",
+    
+    # AUTRES SECTEURS
+    "CROWN SIEM": "Autres Secteurs",
+    "ERIUM": "Autres Secteurs",
+    "ETI TG": "Autres Secteurs",
+    "LOTERIE NATIONALE DU BENIN": "Autres Secteurs",
+    "MOVIS CI": "Autres Secteurs",
 }
 
 @st.cache_data(ttl=300)
-def scrape_secteur(secteur_nom):
-    """Scrape les données d'un secteur spécifique"""
-    url = "https://www.sikafinance.com/marches/secteurs"
+def scrape_toutes_actions():
+    """Scrape toutes les actions depuis la page A-Z"""
+    url = "https://www.sikafinance.com/marches/aaz"
     
     try:
         headers = {
@@ -37,73 +90,55 @@ def scrape_secteur(secteur_nom):
             'Accept-Language': 'fr-FR,fr;q=0.9',
         }
         
-        # Paramètres pour sélectionner le secteur
-        params = {
-            'secteur': secteur_nom
-        }
-        
-        response = requests.get(url, headers=headers, params=params, verify=False, timeout=15)
+        response = requests.get(url, headers=headers, verify=False, timeout=15)
         response.raise_for_status()
         
         soup = BeautifulSoup(response.content, 'html.parser')
         
-        # Trouver le tableau
-        table = soup.find('table')
+        # Trouver toutes les tables
+        tables = soup.find_all('table')
         
-        if not table:
+        if len(tables) < 2:
             return None
         
+        # Deuxième table : Les actions
+        actions_table = tables[1]
+        actions_data = []
+        actions_headers = []
+        
         # Extraire les en-têtes
-        headers_list = []
-        thead = table.find('thead')
+        thead = actions_table.find('thead')
         if thead:
             for th in thead.find_all('th'):
-                headers_list.append(th.get_text(strip=True))
+                actions_headers.append(th.get_text(strip=True))
         
         # Extraire les données
-        data = []
-        tbody = table.find('tbody')
+        tbody = actions_table.find('tbody')
         if tbody:
             for row in tbody.find_all('tr'):
                 cols = row.find_all('td')
                 if cols:
                     row_data = [col.get_text(strip=True) for col in cols]
-                    data.append(row_data)
+                    actions_data.append(row_data)
         
-        if not headers_list or not data:
+        if not actions_headers or not actions_data:
             return None
         
-        df = pd.DataFrame(data, columns=headers_list)
+        df = pd.DataFrame(actions_data, columns=actions_headers)
+        
+        # Ajouter la colonne secteur
+        df['Secteur'] = df['Nom'].map(SECTEURS_MAPPING).fillna('Non classifié')
+        
+        # Réorganiser les colonnes pour mettre Secteur en second
+        cols = df.columns.tolist()
+        cols = [cols[0], cols[-1]] + cols[1:-1]
+        df = df[cols]
+        
         return df
     
     except Exception as e:
-        st.error(f"Erreur lors du scraping du secteur {secteur_nom}: {str(e)}")
+        st.error(f"Erreur lors du scraping: {str(e)}")
         return None
-
-@st.cache_data(ttl=300)
-def scrape_tous_secteurs():
-    """Scrape tous les secteurs et compile les données"""
-    tous_les_secteurs = {}
-    
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    for i, (secteur_key, secteur_nom) in enumerate(SECTEURS.items()):
-        status_text.text(f"Chargement du secteur: {secteur_key}...")
-        
-        df = scrape_secteur(secteur_nom)
-        if df is not None and not df.empty:
-            # Ajouter une colonne secteur
-            df.insert(0, 'Secteur', secteur_key)
-            tous_les_secteurs[secteur_key] = df
-        
-        progress_bar.progress((i + 1) / len(SECTEURS))
-        time.sleep(0.5)  # Petit délai pour ne pas surcharger le serveur
-    
-    progress_bar.empty()
-    status_text.empty()
-    
-    return tous_les_secteurs
 
 # Interface principale
 col1, col2, col3 = st.columns([1, 1, 4])
@@ -117,87 +152,100 @@ with col2:
 
 st.markdown("---")
 
-# Menu de sélection
-mode = st.radio(
-    "Mode d'affichage",
-    ["📊 Vue par secteur", "📈 Vue consolidée"],
-    horizontal=True
-)
+# Charger les données
+with st.spinner("Chargement des données BRVM..."):
+    df_complet = scrape_toutes_actions()
 
-st.markdown("---")
-
-if mode == "📊 Vue par secteur":
-    # Vue par secteur individuel
-    secteur_selectionne = st.selectbox(
-        "Sélectionner un secteur",
-        options=list(SECTEURS.keys()),
-        index=0
-    )
+if df_complet is not None and not df_complet.empty:
+    st.success(f"✅ {len(df_complet)} entreprises chargées avec succès")
     
-    with st.spinner(f"Chargement du secteur {secteur_selectionne}..."):
-        df = scrape_secteur(SECTEURS[secteur_selectionne])
+    # Statistiques globales
+    secteurs_uniques = df_complet['Secteur'].unique()
+    nb_secteurs = len([s for s in secteurs_uniques if s != 'Non classifié'])
     
-    if df is not None and not df.empty:
-        st.success(f"✅ {len(df)} entreprise(s) dans le secteur {secteur_selectionne}")
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Total Entreprises", len(df_complet))
+    with col2:
+        st.metric("Secteurs", nb_secteurs)
+    with col3:
+        st.metric("Date", datetime.now().strftime('%d/%m/%Y'))
+    with col4:
+        st.metric("Source", "Sikafinance")
+    
+    st.markdown("---")
+    
+    # Onglets pour différentes vues
+    tab1, tab2, tab3 = st.tabs(["📊 Vue par secteur", "📈 Vue globale", "📋 Statistiques"])
+    
+    with tab1:
+        st.subheader("Filtrer par secteur")
         
-        # Statistiques
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Entreprises", len(df))
-        with col2:
-            st.metric("Secteur", secteur_selectionne)
-        with col3:
-            st.metric("Source", "Sikafinance")
+        # Sélecteur de secteur
+        secteur_selectionne = st.selectbox(
+            "Choisir un secteur",
+            options=['Tous'] + sorted([s for s in secteurs_uniques if s != 'Non classifié']),
+            index=0
+        )
         
-        st.markdown("---")
+        # Filtrer les données
+        if secteur_selectionne == 'Tous':
+            df_filtre = df_complet
+        else:
+            df_filtre = df_complet[df_complet['Secteur'] == secteur_selectionne]
         
-        # Afficher le tableau
+        # Barre de recherche
+        search = st.text_input("🔍 Rechercher une entreprise", placeholder="Nom de l'entreprise...")
+        
+        if search:
+            mask = df_filtre['Nom'].str.contains(search, case=False, na=False)
+            df_filtre = df_filtre[mask]
+            st.info(f"🔎 {len(df_filtre)} résultat(s) trouvé(s)")
+        
+        # Affichage
         st.dataframe(
-            df,
+            df_filtre,
             use_container_width=True,
-            height=400,
+            height=500,
             hide_index=True
         )
         
         # Téléchargement
-        csv = df.to_csv(index=False, encoding='utf-8-sig')
+        csv = df_filtre.to_csv(index=False, encoding='utf-8-sig')
         st.download_button(
-            label=f"📥 Télécharger {secteur_selectionne} en CSV",
+            label=f"📥 Télécharger ({secteur_selectionne}) en CSV",
             data=csv,
             file_name=f"brvm_{secteur_selectionne.lower().replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.csv",
             mime="text/csv"
         )
-    else:
-        st.warning(f"⚠️ Aucune donnée disponible pour le secteur {secteur_selectionne}")
-
-else:
-    # Vue consolidée de tous les secteurs
-    with st.spinner("Chargement de tous les secteurs..."):
-        tous_secteurs = scrape_tous_secteurs()
     
-    if tous_secteurs:
-        # Statistiques globales
-        total_entreprises = sum(len(df) for df in tous_secteurs.values())
+    with tab2:
+        st.subheader("Toutes les entreprises")
         
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Total Entreprises", total_entreprises)
-        with col2:
-            st.metric("Nombre de Secteurs", len(tous_secteurs))
-        with col3:
-            st.metric("Date", datetime.now().strftime('%d/%m/%Y'))
-        with col4:
-            st.metric("Source", "Sikafinance")
+        # Tableau complet
+        st.dataframe(
+            df_complet,
+            use_container_width=True,
+            height=500,
+            hide_index=True
+        )
         
-        st.markdown("---")
+        # Téléchargement
+        csv_complet = df_complet.to_csv(index=False, encoding='utf-8-sig')
+        st.download_button(
+            label="📥 Télécharger toutes les données en CSV",
+            data=csv_complet,
+            file_name=f"brvm_toutes_entreprises_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv"
+        )
+    
+    with tab3:
+        st.subheader("📊 Répartition par secteur")
         
-        # Répartition par secteur
-        st.subheader("📊 Répartition des entreprises par secteur")
-        
-        repartition = pd.DataFrame([
-            {"Secteur": secteur, "Nombre d'entreprises": len(df)}
-            for secteur, df in tous_secteurs.items()
-        ])
+        # Calculer la répartition
+        repartition = df_complet['Secteur'].value_counts().reset_index()
+        repartition.columns = ['Secteur', 'Nombre d\'entreprises']
+        repartition = repartition[repartition['Secteur'] != 'Non classifié']
         
         col1, col2 = st.columns([2, 1])
         
@@ -213,53 +261,35 @@ else:
         
         st.markdown("---")
         
-        # Afficher chaque secteur dans un expander
-        st.subheader("📋 Détails par secteur")
+        # Détails par secteur dans des expanders
+        st.subheader("Détails par secteur")
         
-        for secteur, df in tous_secteurs.items():
-            with st.expander(f"🏢 {secteur} ({len(df)} entreprises)", expanded=False):
+        for secteur in sorted(repartition['Secteur'].unique()):
+            df_secteur = df_complet[df_complet['Secteur'] == secteur]
+            with st.expander(f"🏢 {secteur} ({len(df_secteur)} entreprises)", expanded=False):
                 st.dataframe(
-                    df.drop('Secteur', axis=1) if 'Secteur' in df.columns else df,
+                    df_secteur.drop('Secteur', axis=1),
                     use_container_width=True,
                     hide_index=True
                 )
         
-        # Téléchargement consolidé
-        st.markdown("---")
-        st.subheader("📥 Téléchargements")
-        
-        # Créer un DataFrame consolidé
-        df_consolide = pd.concat(tous_secteurs.values(), ignore_index=True)
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            csv_consolide = df_consolide.to_csv(index=False, encoding='utf-8-sig')
-            st.download_button(
-                label="📥 Télécharger TOUTES les données (CSV)",
-                data=csv_consolide,
-                file_name=f"brvm_tous_secteurs_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
-        
-        with col2:
-            csv_repartition = repartition.to_csv(index=False, encoding='utf-8-sig')
-            st.download_button(
-                label="📊 Télécharger la répartition (CSV)",
-                data=csv_repartition,
-                file_name=f"brvm_repartition_secteurs_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
-    else:
-        st.error("❌ Impossible de charger les données des secteurs")
+        # Télécharger la répartition
+        csv_repartition = repartition.to_csv(index=False, encoding='utf-8-sig')
+        st.download_button(
+            label="📊 Télécharger la répartition en CSV",
+            data=csv_repartition,
+            file_name=f"brvm_repartition_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv"
+        )
+
+else:
+    st.error("❌ Impossible de charger les données. Veuillez réessayer plus tard.")
 
 # Footer
 st.markdown("---")
 st.markdown("""
 <div style='text-align: center; color: #666;'>
-    <small>Données provenant de <a href='https://www.sikafinance.com/marches/secteurs' target='_blank'>Sikafinance.com</a> | 
-    Mise à jour automatique toutes les 5 minutes</small>
+    <small>Données provenant de <a href='https://www.sikafinance.com/marches/aaz' target='_blank'>Sikafinance.com</a> | 
+    Classification sectorielle basée sur BRVM | Mise à jour automatique toutes les 5 minutes</small>
 </div>
 """, unsafe_allow_html=True)
